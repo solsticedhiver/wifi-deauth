@@ -1,7 +1,7 @@
 import os
 import struct
 
-from scapy.all import RadioTap
+from scapy.all import Dot11Elt
 
 from exceptions import AttackException
 from sniffer import WiFiSniffer
@@ -31,46 +31,38 @@ class ChannelFinder(object):
     def find(self):
         sniffer = WiFiSniffer(self.interface)
         packets = sniffer.sniff(timeout=self.DEFAULT_TIMEOUT,
-                                lfilter=lambda pkt: pkt.haslayer(RadioTap) and\
+                                lfilter=lambda pkt: pkt.haslayer(Dot11Elt) and\
                                                     pkt.addr3 == self.bssid)
-        channel_packet = None
-        
+        dot11elt = None
+
         # Find a packet containing channel information.
         for packet in packets:
-            if self._packet_has_channel_info(packet[RadioTap]):
-                channel_packet = packet[RadioTap]
+            if self._packet_has_channel_info(packet.getlayer(Dot11Elt)):
+                dot11elt = packet.getlayer(Dot11Elt)
                 break
             
         sniffer.stop()
-                
-        if channel_packet is None:
+
+        if dot11elt is None:
             raise AttackException('Failed to find AP channel!')
-                
-        # Extract channel from radiotap header.
-        return self._extract_channel_from(channel_packet)
-    
-    def _packet_has_channel_info(self, radiotap_header):
-        return radiotap_header.present & self.CHANNEL_FLAG != 0
-    
-    def _extract_channel_from(self, radiotap_header):
-        offset = 0
-        if radiotap_header.present & self.TIMESTAMP_FLAG != 0:
-            offset += self.TIMESTAMP_BYTES
-        if radiotap_header.present & self.FLAGS_FLAG != 0:
-            offset += self.FLAGS_BYTES
-        if radiotap_header.present & self.RATE_FLAG != 0:
-            offset += self.RATE_BYTES
-        
-        # Decode frequency and then map it to the channel number.    
-        freq_bytes = radiotap_header.notdecoded[offset:offset+2]    
-        freq = struct.unpack('h', freq_bytes)[0]
-        
-        # Only valid for 2.4 GHz frequency ranges!
-        if freq == 2484:
-            channel = 14
-        else:
-            channel = 1 + (freq - self.CHANNEL_1_FREQ) / 5
-            
+
+        return self._extract_channel_from(dot11elt)
+
+    def _packet_has_channel_info(self, dot11elt):
+        found = False
+        while dot11elt and not found:
+            if dot11elt.ID == 3:
+                found = True
+            dot11elt = dot11elt.payload.getlayer(Dot11Elt)
+        return found
+
+    def _extract_channel_from(self, dot11elt):
+        found = False
+        while not found:
+            if dot11elt.ID == 3:
+                channel = struct.unpack('B', dot11elt.info)[0]
+                found = True
+            dot11elt = dot11elt.payload.getlayer(Dot11Elt)
         return channel
     
     
